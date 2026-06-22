@@ -144,6 +144,20 @@ case $fp_choice in
     8) fpBro="qq" ;;
     *) fpBro="firefox" ;;
 esac
+
+read -p "$(echo -e "\n${YEL}Добавить NetProxy inbound (REALITY MTS, порт 8538, RU>EU)? (y/n, по умолчанию y): ${NC}")" choice_carrier
+choice_carrier=${choice_carrier:-y}
+if [[ "$choice_carrier" =~ ^[Yy]$ ]]; then
+    INSTALL_CARRIER=true
+else
+    INSTALL_CARRIER=false
+fi
+
+# NetProxy / Türkiye-like: маскировка под оператора, нестандартный порт
+CARRIER_PORT=8538
+CARRIER_SNI="cm.a.mts.ru"
+CARRIER_DEST="cm.a.mts.ru:443"
+fpCarrier="qq"
 # ============================
 
 # Включаем BBR
@@ -358,6 +372,54 @@ done
 # Удаляем запятую в конце
 ROUTING_RULES="${ROUTING_RULES%,}"
 
+CARRIER_INBOUND=""
+if [ "$INSTALL_CARRIER" = true ]; then
+CARRIER_INBOUND="$(cat <<EOF
+    {
+      "tag": "RUcarrierRAW",
+      "port": $CARRIER_PORT,
+      "listen": "0.0.0.0",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "flow": "xtls-rprx-vision",
+            "id": "$SERVER_UUID"
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "sockopt": {
+          "acceptProxyProtocol": false
+        },
+        "realitySettings": {
+          "show": false,
+          "target": "$CARRIER_DEST",
+          "spiderX": "/",
+          "shortIds": [
+            "$xray_shortIds_vrv"
+          ],
+          "privateKey": "$xray_privateKey_vrv",
+          "serverNames": [
+            "$CARRIER_SNI"
+          ]
+        }
+      }
+    },
+EOF
+)"
+fi
 
 # Создаем JSON конфигурацию сервера
 cat << EOF > "$SCRIPT_DIR/config.json"
@@ -556,6 +618,7 @@ cat << EOF > "$SCRIPT_DIR/config.json"
         }
       }
     },
+$CARRIER_INBOUND
     {
       "tag": "RUsocks5",
       "port": 10443,
@@ -806,6 +869,79 @@ $PROXY_OUTBOUND,
 TPL
 }
 
+# Клиентский конфиг без split-routing — весь трафик через proxy (для NetProxy)
+print_config_simple() {
+  local PROXY_OUTBOUND="$1"
+  local REMARK="$2"
+
+  cat << TPL
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "dns": {
+    "servers":[
+      "https://8.8.4.4/dns-query",
+      "https://8.8.8.8/dns-query",
+      "https://1.1.1.1/dns-query"
+    ],
+    "queryStrategy": "UseIPv4"
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules":[
+      {
+        "domain":[
+          "geosite:category-ads",
+          "geosite:win-spy"
+        ],
+        "outboundTag": "block"
+      },
+      {
+        "protocol":[
+          "bittorrent"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "ip":[
+          "geoip:private"
+        ],
+        "outboundTag": "direct"
+      }
+    ]
+  },
+  "inbounds":[
+    {
+      "tag": "socks-in",
+      "protocol": "socks",
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "settings": {
+        "udp": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride":[ "http", "tls", "quic" ]
+      }
+    }
+  ],
+  "outbounds":[
+$PROXY_OUTBOUND,
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "remarks": "$REMARK"
+}
+TPL
+}
+
 CLIENT_CONFIGS=""
 declare -a CONFIGS_ARRAY
 ALL_LINKS_TEXT=""
@@ -907,6 +1043,39 @@ EOF
 
     done
 
+    if [ "$INSTALL_CARRIER" = true ]; then
+    OUT_CARRIER_MTS=$(cat <<EOF
+    {
+      "mux": { "concurrency": -1, "enabled": false },
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext":[{
+          "address": "$LOCAL_IP",
+          "port": $CARRIER_PORT,
+          "users":[{ "id": "${BRIDGE_UUID[$i]}", "flow": "xtls-rprx-vision", "encryption": "none" }]
+        }]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "show": false, "fingerprint": "$fpCarrier", "serverName": "$CARRIER_SNI",
+          "password": "$xray_publicKey_vrv", "shortId": "$xray_shortIds_vrv", "spiderX": "/"
+        }
+      }
+    }
+EOF
+)
+
+    CLIENT_CONFIGS+="$(print_config_simple "$OUT_CARRIER_MTS" "📱 NetProxy MTS RU>EU | $REMARK_BASE")"
+    CLIENT_CONFIGS+=","
+
+    link_carrier="vless://${BRIDGE_UUID[$i]}@${LOCAL_IP}:${CARRIER_PORT}?security=reality&type=tcp&headerType=&path=&host=&flow=xtls-rprx-vision&sni=${CARRIER_SNI}&fp=${fpCarrier}&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&spx=%2F#NetProxy_MTS_RU%3EEU_$REMARK_BASE"
+
+    CONFIGS_ARRAY+=( "NetProxy MTS (RU>EU $REMARK_BASE)|$link_carrier" )
+    fi
+
     EXTRA_VAL="${NODE_EXTRA[$i]}"
     if [ -z "$EXTRA_VAL" ]; then EXTRA_VAL="null"; fi
 
@@ -1004,7 +1173,17 @@ cat >> "$WEB_PATH/$path_subpage.html" <<EOF
 </div>
 <p>Маршрутизацию нужно выключить, она тут встроенная. По умолчанию она выключена - включается, если вы пользовались сторонними сервисами.</p>
 
-<h2>➡️ Конфиги ($COUNT VPS x 5: 443 + 8443 + EU dir)</h2>
+EOF
+
+if [ "$INSTALL_CARRIER" = true ]; then
+cat >> "$WEB_PATH/$path_subpage.html" <<EOF
+<h2>💼 NetProxy / v2rayN (простой RAW, MTS-маскировка, порт $CARRIER_PORT)</h2>
+<p>Для корпоративных сетей: TCP + REALITY + Vision, SNI $CARRIER_SNI, туннель RU→EU. Весь трафик через VPN (без split-routing). Откройте порт <b>$CARRIER_PORT</b> в firewall.</p>
+EOF
+fi
+
+cat >> "$WEB_PATH/$path_subpage.html" <<EOF
+<h2>➡️ Конфиги ($COUNT VPS: 443 + 8443 + EU dir$( [ "$INSTALL_CARRIER" = true ] && echo " + NetProxy" ))</h2>
 EOF
 
 # Вывод строк конфигов
@@ -1087,6 +1266,7 @@ ${GRN}$configListLink ${NC}
 
 Открыт локальный socks5 на порту 10443.
 Внутри клиента: socks5 на 10808, 2080 и http на 10809.
+$(if [ "$INSTALL_CARRIER" = true ]; then echo -e "\n${YEL}NetProxy (MTS REALITY): порт ${GRN}$CARRIER_PORT${NC}, SNI ${GRN}$CARRIER_SNI${NC}\nОткройте порт $CARRIER_PORT в firewall на RU VPS."; fi)
 
 ${GRN}Поддержать автора: https://github.com/xVRVx/autoXRAY ${NC}
 

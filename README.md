@@ -148,7 +148,7 @@ systemctl stop telemt; systemctl disable telemt; rm -f /etc/systemd/system/telem
 
 ## Повышенная маскировка
 
-Настоятельно рекомендуется: сменить порт ssh со стандартного 22 на другой и/или сделать вход на сервер по ключу. Настроить файрвол и оставить открытыми порты для работы скрипта: ваш ssh порт, 80 для certbot, 443, 8443, 10443 для xray, 2408 для warp
+Настоятельно рекомендуется: сменить порт ssh со стандартного 22 на другой и/или сделать вход на сервер по ключу. Настроить файрвол и оставить открытыми порты для работы скрипта: ваш ssh порт, 80 для certbot, 443, 8443, 10443 для xray, 2408 для warp. На **RU VPS** (мост) дополнительно: **8538** (NetProxy / MTS REALITY).
 
 Если вы хотите погрузиться в дело конфигурации xray есть отличный [справочник](https://xtls.github.io/ru/config/outbounds/vless.html) и [руководство](https://github.com/XTLS/Xray-core/discussions/3518).
 
@@ -184,6 +184,8 @@ bash -c "$(curl -L https://raw.githubusercontent.com/KonstantinAlexeevich/autoXR
 ```
 
 На RU VPS дополнительно доступны те же конфиги моста на порту **8443** (в подписке: `RU>EU xhttp :8443` / `RU>EU raw :8443`).
+
+**NetProxy / корпоративная сеть:** скрипт RU-моста по умолчанию добавляет inbound **REALITY + Vision** с маскировкой под `cm.a.mts.ru` на порту **8538** (туннель RU→EU сохраняется). На странице конфигов — ссылка **`NetProxy MTS (RU>EU)`**. Откройте порт **8538** в firewall на RU VPS. Подходит для NetProxy, v2rayN и других клиентов с поддержкой `type=tcp` + REALITY.
 
 ===
 
