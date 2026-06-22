@@ -92,8 +92,11 @@ for (( i=0; i<COUNT; i++ )); do
     BRIDGE_UUID[$i]="${g1}-${g2}-${HEX_ROUTE_ID}-${g4}-${g5}"
 done
 
-# Порт прослушивания сервера-моста (единый для Inbound, обычно 443 для Reality)
+# Порты прослушивания сервера-моста (443 и альтернативный 8443)
 SERVER_PORT=443
+SERVER_PORT_ALT=8443
+XHTTP_PORT=3333
+XHTTP_PORT_ALT=3334
 
 echo -e "${YEL}Обновление и установка необходимых пакетов...${NC}"
 apt-get update && apt-get install curl jq dnsutils openssl nginx certbot wget tar -y
@@ -389,7 +392,7 @@ cat << EOF > "$SCRIPT_DIR/config.json"
   "inbounds": [
     {
       "tag": "RUbrEUraw",
-      "port": 443,
+      "port": $SERVER_PORT,
       "listen": "0.0.0.0",
       "protocol": "vless",
       "settings": {
@@ -402,7 +405,56 @@ cat << EOF > "$SCRIPT_DIR/config.json"
         "decryption": "none",
         "fallbacks": [
           {
-            "dest": "3333",
+            "dest": "$XHTTP_PORT",
+            "xver": 2
+          }
+        ]
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "sockopt": {
+          "acceptProxyProtocol": false
+        },
+        "realitySettings": {
+          "show": false,
+          "xver": 2,
+          "target": "${TARGET_MTP}",
+          "spiderX": "/",
+          "shortIds": [
+            "$xray_shortIds_vrv"
+          ],
+          "privateKey": "$xray_privateKey_vrv",
+          "serverNames": [
+            "$DOMAIN"
+          ]
+        }
+      }
+    },
+    {
+      "tag": "RUbrEUraw8443",
+      "port": $SERVER_PORT_ALT,
+      "listen": "0.0.0.0",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "flow": "xtls-rprx-vision",
+            "id": "$SERVER_UUID"
+          }
+        ],
+        "decryption": "none",
+        "fallbacks": [
+          {
+            "dest": "$XHTTP_PORT_ALT",
             "xver": 2
           }
         ]
@@ -438,7 +490,41 @@ cat << EOF > "$SCRIPT_DIR/config.json"
     },
     {
       "tag": "RUbrEUxhttp",
-      "port": 3333,
+      "port": $XHTTP_PORT,
+      "listen": "127.0.0.1",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$SERVER_UUID"
+          }
+        ],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "mode": "stream-one",
+          "path": "/$path_xhttp",
+          "acceptProxyProtocol": false
+        },
+        "security": "none",
+        "sockopt": {
+          "acceptProxyProtocol": true
+        }
+      }
+    },
+    {
+      "tag": "RUbrEUxhttp8443",
+      "port": $XHTTP_PORT_ALT,
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": {
@@ -729,7 +815,14 @@ for (( i=0; i<COUNT; i++ )); do
     REMARK_BASE="${NODE_NAME[$i]}"
     if [ -z "$REMARK_BASE" ]; then REMARK_BASE="Node_$i"; fi
 
-    # --- Config: Bridge XHTTP (идет на мост, порт $SERVER_PORT) ---
+    for LISTEN_PORT in "$SERVER_PORT" "$SERVER_PORT_ALT"; do
+        if [ "$LISTEN_PORT" = "$SERVER_PORT_ALT" ]; then
+            PORT_SUFFIX=" :8443"
+        else
+            PORT_SUFFIX=""
+        fi
+
+    # --- Config: Bridge XHTTP (идет на мост, порт $LISTEN_PORT) ---
     OUT_REALITY_XHTTP=$(cat <<EOF
     {
       "mux": { "concurrency": -1, "enabled": false },
@@ -738,7 +831,7 @@ for (( i=0; i<COUNT; i++ )); do
       "settings": {
         "vnext":[{
           "address": "$DOMAIN",
-          "port": $SERVER_PORT,
+          "port": $LISTEN_PORT,
           "users":[{ "id": "${BRIDGE_UUID[$i]}", "encryption": "none" }]
         }]
       },
@@ -773,7 +866,7 @@ for (( i=0; i<COUNT; i++ )); do
 EOF
 )
 
-    # --- Config: Bridge RAW Vision (идет на мост, порт $SERVER_PORT) ---
+    # --- Config: Bridge RAW Vision (идет на мост, порт $LISTEN_PORT) ---
     OUT_REALITY_VISION=$(cat <<EOF
     {
       "mux": { "concurrency": -1, "enabled": false },
@@ -782,7 +875,7 @@ EOF
       "settings": {
         "vnext":[{
           "address": "$DOMAIN",
-          "port": $SERVER_PORT,
+          "port": $LISTEN_PORT,
           "users":[{ "id": "${BRIDGE_UUID[$i]}", "flow": "xtls-rprx-vision", "encryption": "none" }]
         }]
       },
@@ -797,6 +890,22 @@ EOF
     }
 EOF
 )
+
+    # Генерируем 2 конфига моста на ноду и склеиваем в массив JSON
+    CLIENT_CONFIGS+="$(print_config "$OUT_REALITY_XHTTP" "🇷🇺 RU>EU xhttp$PORT_SUFFIX | $REMARK_BASE")"
+    CLIENT_CONFIGS+=","
+    CLIENT_CONFIGS+="$(print_config "$OUT_REALITY_VISION" "🇷🇺 RU>EU raw$PORT_SUFFIX | $REMARK_BASE")"
+    CLIENT_CONFIGS+=","
+
+    # --- Генерируем ссылки vless:// для HTML странички ---
+    link_xhttp="vless://${BRIDGE_UUID[$i]}@$DOMAIN:$LISTEN_PORT?security=reality&type=xhttp&headerType=&path=%2F$path_xhttp&host=&mode=stream-one&extra=%7B%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A%221000-3000%22%2C%22maxConcurrency%22%3A%223-5%22%2C%22maxConnections%22%3A0%2C%22hKeepAlivePeriod%22%3A0%2C%22hMaxRequestTimes%22%3A%22400-700%22%2C%22hMaxReusableSecs%22%3A%221200-1800%22%7D%2C%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Afalse%2C%22xPaddingBytes%22%3A%22400-800%22%2C%22scMaxEachPostBytes%22%3A1500000%2C%22scMinPostsIntervalMs%22%3A20%2C%22scStreamUpServerSecs%22%3A%2260-240%22%7D&sni=$DOMAIN&fp=$fpBro&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&spx=%2F#RU%3EEU_xhttp${PORT_SUFFIX// /}_$REMARK_BASE"
+
+    link_raw="vless://${BRIDGE_UUID[$i]}@$DOMAIN:$LISTEN_PORT?security=reality&type=tcp&headerType=&path=&host=&flow=xtls-rprx-vision&sni=$DOMAIN&fp=$fpBro&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&spx=%2F#RU%3EEU_raw${PORT_SUFFIX// /}_$REMARK_BASE"
+
+    CONFIGS_ARRAY+=( "XHTTP (RU>EU$PORT_SUFFIX $REMARK_BASE)|$link_xhttp" )
+    CONFIGS_ARRAY+=( "RAW VISION (RU>EU$PORT_SUFFIX $REMARK_BASE)|$link_raw" )
+
+    done
 
     EXTRA_VAL="${NODE_EXTRA[$i]}"
     if [ -z "$EXTRA_VAL" ]; then EXTRA_VAL="null"; fi
@@ -836,24 +945,12 @@ EOF
 EOF
 )
 
-    # Генерируем 3 конфига на ноду и склеиваем в массив JSON
-    CLIENT_CONFIGS+="$(print_config "$OUT_REALITY_XHTTP" "🇷🇺 RU>EU xhttp | $REMARK_BASE")"
-    CLIENT_CONFIGS+=","
-    CLIENT_CONFIGS+="$(print_config "$OUT_REALITY_VISION" "🇷🇺 RU>EU raw | $REMARK_BASE")"
-    CLIENT_CONFIGS+=","
     CLIENT_CONFIGS+="$(print_config "$OUT_DIRECT_EU" "🇪🇺 EU dir | $REMARK_BASE")"
 
     if [ $i -lt $((COUNT-1)) ]; then
         CLIENT_CONFIGS+=","
     fi
 
-    # --- Генерируем ссылки vless:// для HTML странички (с портом моста) ---
-    link_xhttp="vless://${BRIDGE_UUID[$i]}@$DOMAIN:$SERVER_PORT?security=reality&type=xhttp&headerType=&path=%2F$path_xhttp&host=&mode=stream-one&extra=%7B%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A%221000-3000%22%2C%22maxConcurrency%22%3A%223-5%22%2C%22maxConnections%22%3A0%2C%22hKeepAlivePeriod%22%3A0%2C%22hMaxRequestTimes%22%3A%22400-700%22%2C%22hMaxReusableSecs%22%3A%221200-1800%22%7D%2C%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Afalse%2C%22xPaddingBytes%22%3A%22400-800%22%2C%22scMaxEachPostBytes%22%3A1500000%2C%22scMinPostsIntervalMs%22%3A20%2C%22scStreamUpServerSecs%22%3A%2260-240%22%7D&sni=$DOMAIN&fp=$fpBro&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&spx=%2F#RU%3EEU_xhttp_$REMARK_BASE"
-
-    link_raw="vless://${BRIDGE_UUID[$i]}@$DOMAIN:$SERVER_PORT?security=reality&type=tcp&headerType=&path=&host=&flow=xtls-rprx-vision&sni=$DOMAIN&fp=$fpBro&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&spx=%2F#RU%3EEU_raw_$REMARK_BASE"
-
-    CONFIGS_ARRAY+=( "XHTTP (RU>EU $REMARK_BASE)|$link_xhttp" )
-    CONFIGS_ARRAY+=( "RAW VISION (RU>EU $REMARK_BASE)|$link_raw" )
     CONFIGS_ARRAY+=( "Direct EU ($REMARK_BASE)|${VLESS_URLS[$i]}" )
 done
 
@@ -907,7 +1004,7 @@ cat >> "$WEB_PATH/$path_subpage.html" <<EOF
 </div>
 <p>Маршрутизацию нужно выключить, она тут встроенная. По умолчанию она выключена - включается, если вы пользовались сторонними сервисами.</p>
 
-<h2>➡️ Конфиги ($COUNT VPS x 3 протокола)</h2>
+<h2>➡️ Конфиги ($COUNT VPS x 5: 443 + 8443 + EU dir)</h2>
 EOF
 
 # Вывод строк конфигов
